@@ -120,10 +120,43 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
 
+    [DllImport("setupapi.dll", SetLastError = true)]
+    public static extern IntPtr SetupDiCreateDeviceInfoList(
+        IntPtr ClassGuid,
+        IntPtr hwndParent);
+
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetupDiOpenDeviceInfo(
+        IntPtr DeviceInfoSet,
+        string DeviceInstanceId,
+        IntPtr hwndParent,
+        uint Flags,
+        ref SP_DEVINFO_DATA DeviceInfoData);
+
     [DllImport("cfgmgr32.dll", SetLastError = true)]
     public static extern uint CM_Get_DevNode_Status(
         out uint pulStatus,
         out uint pulProblemNumber,
         uint dnDevInst,
+        uint ulFlags);
+
+    [DllImport("cfgmgr32.dll", SetLastError = true)]
+    public static extern uint CM_Get_Parent(
+        out uint pdnDevInst,
+        uint dnDevInst,
+        uint ulFlags);
+
+    [DllImport("cfgmgr32.dll", SetLastError = true)]
+    public static extern uint CM_Get_Device_ID_Size(
+        out uint pulLen,
+        uint dnDevInst,
+        uint ulFlags);
+
+    [DllImport("cfgmgr32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CM_Get_Device_IDW")]
+    public static extern uint CM_Get_Device_ID(
+        uint dnDevInst,
+        char[] Buffer,
+        uint BufferLen,
         uint ulFlags);
 }

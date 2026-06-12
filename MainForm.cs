@@ -115,8 +115,11 @@ public sealed class MainForm : Form
 
         try
         {
-            DeviceManager.SetEnabled(device.InstanceId, enable);
+            DeviceManager.SetEnabled(device, enable);
             device.IsEnabled = enable;
+            // Refresh labels so the "[вкл]/[откл]" suffix stays accurate.
+            // Deferred so we don't mutate the list from inside ItemCheck.
+            BeginInvoke((MethodInvoker)ReloadDevices);
         }
         catch (Exception ex)
         {
