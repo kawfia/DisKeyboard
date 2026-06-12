@@ -214,7 +214,7 @@ public static class DeviceManager
             if (!SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref devInfo))
                 throw LastError("SetupDiOpenDeviceInfo");
 
-            var filters = ReadUpperFiltersFrom(set, ref devInfo) ?? new List<string>();
+            var filters = ReadUpperFiltersFrom(set, ref devInfo);
             bool present = filters.Any(
                 f => f.Equals(RegistryBlockFilter, StringComparison.OrdinalIgnoreCase));
 
@@ -233,6 +233,21 @@ public static class DeviceManager
             }
 
             WriteUpperFilters(set, ref devInfo, filters);
+
+            // Verify the change actually landed. The Enum hardware key is
+            // SYSTEM-owned, so a write that quietly did nothing would otherwise
+            // look like success and leave the user unable to re-enable later.
+            var after = ReadUpperFiltersFrom(set, ref devInfo);
+            bool nowBlocked = after.Any(
+                f => f.Equals(RegistryBlockFilter, StringComparison.OrdinalIgnoreCase));
+            if (nowBlocked != block)
+            {
+                throw new InvalidOperationException(
+                    "Изменение не записалось в реестр. Проверьте/поправьте вручную " +
+                    "значение UpperFilters в ветке:\n" +
+                    $@"HKLM\SYSTEM\CurrentControlSet\Enum\{instanceId}" + "\n" +
+                    $"(удалите строку «{RegistryBlockFilter}», чтобы включить клавиатуру).");
+            }
         }
         finally
         {
@@ -355,14 +370,10 @@ public static class DeviceManager
                 "Это устройство нельзя отключить на уровне оборудования: Windows " +
                 "помечает его как не отключаемое. У встроенной PS/2-клавиатуры " +
                 "контроллер i8042 также обслуживает тачпад, поэтому Windows " +
-                "запрещает его отключение.\n\n" +
-                "Чтобы отключить ТОЛЬКО эту клавиатуру, нажмите «Заблокировать " +
-                "выбранную через реестр» — она перестанет работать после " +
-                "перезагрузки (тачпад и другие клавиатуры не затрагиваются, " +
-                "блокировка обратима).\n\n" +
-                "Либо используйте «Аварийную блокировку ВСЕХ клавиатур» — она " +
-                "действует сразу через перехват ввода, но блокирует все " +
-                "клавиатуры (снять: мышь или Ctrl+Alt+End).");
+                "запрещает его отключение. Снимите галочку ещё раз — приложение " +
+                "отключит ТОЛЬКО эту клавиатуру через реестр (вступит в силу " +
+                "после перезагрузки, обратимо). Либо используйте «Аварийную " +
+                "блокировку ВСЕХ клавиатур» — она действует сразу.");
         }
 
         var propChange = new SP_PROPCHANGE_PARAMS
