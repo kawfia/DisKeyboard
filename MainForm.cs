@@ -12,10 +12,14 @@ public sealed class MainForm : Form
     private readonly CheckedListBox _list = new();
     private readonly Button _refreshButton = new();
     private readonly Label _hint = new();
+    private readonly CheckBox _lockAll = new();
     private readonly NotifyIcon _trayIcon = new();
+    private readonly KeyboardBlocker _blocker = new();
 
+    private ToolStripMenuItem _lockMenuItem = null!;
     private List<KeyboardDevice> _devices = new();
     private bool _suppressItemCheck;
+    private bool _suppressLockCheck;
     private bool _reallyExit;
 
     public MainForm()
@@ -23,6 +27,9 @@ public sealed class MainForm : Form
         BuildUi();
         BuildTray();
         ReloadDevices();
+
+        // Keep the UI in sync if the Ctrl+Alt+End escape combo releases the lock.
+        _blocker.Released += () => BeginInvoke((MethodInvoker)(() => SetLockState(false)));
     }
 
     private void BuildUi()
@@ -49,9 +56,16 @@ public sealed class MainForm : Form
         _refreshButton.Height = 36;
         _refreshButton.Click += (_, _) => ReloadDevices();
 
+        _lockAll.Text = "Аварийная блокировка ВСЕХ клавиатур (снять: мышь или Ctrl+Alt+End)";
+        _lockAll.Dock = DockStyle.Bottom;
+        _lockAll.Height = 32;
+        _lockAll.Padding = new Padding(8, 4, 8, 4);
+        _lockAll.CheckedChanged += OnLockCheckedChanged;
+
         // Add in reverse order of docking precedence.
         Controls.Add(_list);
         Controls.Add(_hint);
+        Controls.Add(_lockAll);
         Controls.Add(_refreshButton);
     }
 
@@ -63,9 +77,15 @@ public sealed class MainForm : Form
         {
             Font = new Font(menu.Font, FontStyle.Bold),
         };
+        _lockMenuItem = new ToolStripMenuItem(
+            "Заблокировать все клавиатуры", null, (_, _) => SetLockState(!_blocker.IsActive))
+        {
+            CheckOnClick = false,
+        };
         var exitItem = new ToolStripMenuItem("Выход", null, (_, _) => ExitApplication());
 
         menu.Items.Add(openItem);
+        menu.Items.Add(_lockMenuItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
 
@@ -131,6 +151,54 @@ public sealed class MainForm : Form
         }
     }
 
+    private void OnLockCheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressLockCheck)
+            return;
+
+        SetLockState(_lockAll.Checked);
+    }
+
+    /// <summary>
+    /// Turns the global keyboard block on or off and keeps every piece of UI
+    /// (the checkbox, the tray item, the tray tooltip) consistent. Safe to call
+    /// from any path — it never recurses through the checkbox event.
+    /// </summary>
+    private void SetLockState(bool active)
+    {
+        try
+        {
+            if (active)
+                _blocker.Start();
+            else
+                _blocker.Stop();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Не удалось переключить блокировку клавиатуры:\n{ex.Message}",
+                "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        bool isActive = _blocker.IsActive;
+
+        _suppressLockCheck = true;
+        try
+        {
+            _lockAll.Checked = isActive;
+        }
+        finally
+        {
+            _suppressLockCheck = false;
+        }
+
+        _lockMenuItem.Checked = isActive;
+        _lockMenuItem.Text = isActive
+            ? "Разблокировать все клавиатуры"
+            : "Заблокировать все клавиатуры";
+        _trayIcon.Text = isActive ? "DisKeyboard — клавиатуры заблокированы" : "DisKeyboard";
+    }
+
     private static bool IsElevated()
     {
         try
@@ -180,6 +248,7 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            _blocker.Dispose();
             _trayIcon.Dispose();
             _list.Dispose();
         }

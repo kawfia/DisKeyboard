@@ -44,25 +44,22 @@ public static class DeviceManager
                 string nodeId = GetInstanceId(deviceInfoSet, ref devInfo);
                 bool nodeDisableable = (GetStatus(devInfo.DevInst).status & DN_DISABLEABLE) != 0;
 
-                // Resolve which node we actually toggle.
+                // Resolve which node we actually toggle. Keyboard-class nodes
+                // are usually marked non-disableable, so when that happens we
+                // climb the device tree to the nearest ancestor Windows *will*
+                // let us disable (for a USB keyboard that is its USB device node,
+                // typically two or three levels up — not just the immediate
+                // parent).
                 string targetId = nodeId;
                 bool targetDisableable = nodeDisableable;
                 bool targetEnabled = !IsDisabled(devInfo.DevInst);
 
-                if (!nodeDisableable)
+                if (!nodeDisableable && FindDisableableAncestor(devInfo.DevInst) is { } ancestor)
                 {
-                    string? parentId = GetParentInstanceId(devInfo.DevInst);
-                    if (parentId is not null)
-                    {
-                        var parent = ReadStatus(parentId);
-                        if (parent is { } p)
-                        {
-                            targetId = parentId;
-                            targetDisableable = (p.status & DN_DISABLEABLE) != 0;
-                            targetEnabled = !((p.status & DN_HAS_PROBLEM) != 0 && p.problem == CM_PROB_DISABLED);
-                            name = $"{name} (через родителя)";
-                        }
-                    }
+                    targetId = ancestor.instanceId;
+                    targetDisableable = true;
+                    targetEnabled = ancestor.enabled;
+                    name = $"{name} (через родителя)";
                 }
 
                 result.Add(new KeyboardDevice
@@ -225,10 +222,13 @@ public static class DeviceManager
         if (!enable && (GetStatus(devInfo.DevInst).status & DN_DISABLEABLE) == 0)
         {
             throw new InvalidOperationException(
-                "Это устройство нельзя отключить: Windows помечает его как не " +
-                "отключаемое. У встроенной PS/2-клавиатуры родителем часто служит " +
-                "контроллер i8042, который также обслуживает тачпад, поэтому " +
-                "Windows запрещает его отключение.");
+                "Это устройство нельзя отключить на уровне оборудования: Windows " +
+                "помечает его как не отключаемое. У встроенной PS/2-клавиатуры " +
+                "контроллер i8042 также обслуживает тачпад, поэтому Windows " +
+                "запрещает его отключение.\n\n" +
+                "Используйте режим «Аварийная блокировка ВСЕХ клавиатур» внизу окна " +
+                "— он гарантированно блокирует ввод через перехват клавиатуры " +
+                "(снять можно мышью или комбинацией Ctrl+Alt+End).");
         }
 
         var propChange = new SP_PROPCHANGE_PARAMS
@@ -289,15 +289,51 @@ public static class DeviceManager
         }
     }
 
-    private static string? GetParentInstanceId(uint devInst)
+    /// <summary>Hard cap on how far we climb the device tree, so a broken or
+    /// cyclic chain can never spin forever.</summary>
+    private const int MaxParentWalk = 16;
+
+    /// <summary>
+    /// Walks up the device tree from <paramref name="devInst"/> and returns the
+    /// nearest ancestor that Windows reports as disableable. Returns
+    /// <c>null</c> when no ancestor can be disabled (e.g. a built-in PS/2
+    /// keyboard whose i8042 controller is shared with the touchpad).
+    /// </summary>
+    private static (string instanceId, bool enabled)? FindDisableableAncestor(uint devInst)
     {
-        if (CM_Get_Parent(out uint parent, devInst, 0) != CR_SUCCESS)
-            return null;
-        if (CM_Get_Device_ID_Size(out uint len, parent, 0) != CR_SUCCESS || len == 0)
+        uint current = devInst;
+        for (int level = 0; level < MaxParentWalk; level++)
+        {
+            if (CM_Get_Parent(out uint parent, current, 0) != CR_SUCCESS)
+                return null;
+
+            var (status, problem) = GetStatus(parent);
+            if (status == 0)
+                return null; // Could not read this node; stop climbing.
+
+            if ((status & DN_DISABLEABLE) != 0)
+            {
+                string? id = GetDeviceIdFromDevInst(parent);
+                if (id is null)
+                    return null;
+
+                bool enabled = !((status & DN_HAS_PROBLEM) != 0 && problem == CM_PROB_DISABLED);
+                return (id, enabled);
+            }
+
+            current = parent;
+        }
+
+        return null;
+    }
+
+    private static string? GetDeviceIdFromDevInst(uint devInst)
+    {
+        if (CM_Get_Device_ID_Size(out uint len, devInst, 0) != CR_SUCCESS || len == 0)
             return null;
 
         var buffer = new char[len + 1];
-        if (CM_Get_Device_ID(parent, buffer, len + 1, 0) != CR_SUCCESS)
+        if (CM_Get_Device_ID(devInst, buffer, len + 1, 0) != CR_SUCCESS)
             return null;
 
         return new string(buffer).TrimEnd('\0');
