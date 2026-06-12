@@ -149,14 +149,30 @@ public static class DeviceManager
     }
 
     /// <summary>
-    /// Builds an exception that preserves the raw Win32 error code and the
-    /// system's description, so failures are actually diagnosable.
+    /// Builds an exception that preserves the raw Win32 error code, the
+    /// system's description and a short hint, so failures are diagnosable.
     /// </summary>
     private static Win32Exception LastError(string apiName)
     {
         int code = Marshal.GetLastWin32Error();
         string system = new Win32Exception(code).Message;
-        return new Win32Exception(code, $"{apiName} failed (код {code}: {system}).");
+        string hint = code switch
+        {
+            5 => " Похоже, приложение запущено БЕЗ прав администратора.",
+            13 => " Неверные данные (ERROR_INVALID_DATA) — проблема со структурой вызова.",
+            87 => " Неверный параметр (ERROR_INVALID_PARAMETER).",
+            _ => string.Empty,
+        };
+
+        string message = $"{apiName} failed (код {code}: {system}).{hint}";
+        try
+        {
+            string log = Path.Combine(Path.GetTempPath(), "DisKeyboard.log");
+            File.AppendAllText(log, $"{DateTime.Now:O}  {message}{Environment.NewLine}");
+        }
+        catch { /* логирование не критично */ }
+
+        return new Win32Exception(code, message);
     }
 
     private static bool IsDisabled(uint devInst)
