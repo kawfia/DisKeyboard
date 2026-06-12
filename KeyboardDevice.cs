@@ -36,6 +36,13 @@ public sealed class KeyboardDevice
     public bool UsesParent => !string.Equals(
         InstanceId, TargetInstanceId, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// State shown by the list checkbox. A registry-blocked keyboard is treated
+    /// as disabled even if it is still running until the next reboot, so the
+    /// checkbox reflects the user's intent.
+    /// </summary>
+    public bool EffectivelyEnabled => IsEnabled && !IsRegistryBlocked;
+
     public string DisplayName
     {
         get
