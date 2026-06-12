@@ -34,6 +34,7 @@ internal static class NativeMethods
     // CM_Get_DevNode_Status results
     public const uint CR_SUCCESS = 0x00000000;
     public const uint DN_HAS_PROBLEM = 0x00000400;
+    public const uint DN_DISABLEABLE = 0x00002000;
     public const uint CM_PROB_DISABLED = 22;
 
     public const int ERROR_NO_MORE_ITEMS = 259;

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+using System.Security.Principal;
 
 namespace DisKeyboard;
 
@@ -27,7 +27,7 @@ public sealed class MainForm : Form
 
     private void BuildUi()
     {
-        Text = "DisKeyboard";
+        Text = IsElevated() ? "DisKeyboard (администратор)" : "DisKeyboard — БЕЗ прав администратора!";
         ClientSize = new Size(460, 320);
         MinimumSize = new Size(360, 240);
         StartPosition = FormStartPosition.CenterScreen;
@@ -125,6 +125,20 @@ public sealed class MainForm : Form
             MessageBox.Show(this,
                 $"Не удалось {(enable ? "включить" : "отключить")} клавиатуру \"{device.Name}\":\n{ex.Message}",
                 "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private static bool IsElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
         }
     }
 

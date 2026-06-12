@@ -104,6 +104,17 @@ public static class DeviceManager
 
     private static void ChangeState(IntPtr deviceInfoSet, ref SP_DEVINFO_DATA devInfo, bool enable)
     {
+        // Windows marks some devices (often the built-in PS/2 keyboard) as
+        // non-disableable — Device Manager greys out "Disable" for them too.
+        if (!enable && !IsDisableable(devInfo.DevInst))
+        {
+            throw new InvalidOperationException(
+                "Эту клавиатуру нельзя отключить: Windows помечает устройство как " +
+                "не отключаемое (в Диспетчере устройств пункт «Отключить» для неё " +
+                "также недоступен). Для встроенных PS/2-клавиатур обычно требуется " +
+                "замена драйвера, а не простое отключение.");
+        }
+
         var propChange = new SP_PROPCHANGE_PARAMS
         {
             ClassInstallHeader = new SP_CLASSINSTALL_HEADER
@@ -120,15 +131,48 @@ public static class DeviceManager
                 deviceInfoSet, ref devInfo, ref propChange,
                 (uint)Marshal.SizeOf<SP_PROPCHANGE_PARAMS>()))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(),
-                "SetupDiSetClassInstallParams failed.");
+            throw LastError("SetupDiSetClassInstallParams");
         }
 
         if (!SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, deviceInfoSet, ref devInfo))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(),
-                "SetupDiCallClassInstaller failed. Make sure the app runs as administrator.");
+            throw LastError("SetupDiCallClassInstaller");
         }
+    }
+
+    private static bool IsDisableable(uint devInst)
+    {
+        if (CM_Get_DevNode_Status(out uint status, out _, devInst, 0) != CR_SUCCESS)
+            return true; // Status unknown — let the SetupAPI call decide.
+
+        return (status & DN_DISABLEABLE) != 0;
+    }
+
+    /// <summary>
+    /// Builds an exception that preserves the raw Win32 error code, the
+    /// system's description and a short hint, so failures are diagnosable.
+    /// </summary>
+    private static Win32Exception LastError(string apiName)
+    {
+        int code = Marshal.GetLastWin32Error();
+        string system = new Win32Exception(code).Message;
+        string hint = code switch
+        {
+            5 => " Похоже, приложение запущено БЕЗ прав администратора.",
+            13 => " Неверные данные (ERROR_INVALID_DATA) — проблема со структурой вызова.",
+            87 => " Неверный параметр (ERROR_INVALID_PARAMETER).",
+            _ => string.Empty,
+        };
+
+        string message = $"{apiName} failed (код {code}: {system}).{hint}";
+        try
+        {
+            string log = Path.Combine(Path.GetTempPath(), "DisKeyboard.log");
+            File.AppendAllText(log, $"{DateTime.Now:O}  {message}{Environment.NewLine}");
+        }
+        catch { /* логирование не критично */ }
+
+        return new Win32Exception(code, message);
     }
 
     private static bool IsDisabled(uint devInst)
