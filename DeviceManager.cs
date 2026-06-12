@@ -44,25 +44,22 @@ public static class DeviceManager
                 string nodeId = GetInstanceId(deviceInfoSet, ref devInfo);
                 bool nodeDisableable = (GetStatus(devInfo.DevInst).status & DN_DISABLEABLE) != 0;
 
-                // Resolve which node we actually toggle.
+                // Resolve which node we actually toggle. Keyboard-class nodes
+                // are usually marked non-disableable, so when that happens we
+                // climb the device tree to the nearest ancestor Windows *will*
+                // let us disable (for a USB keyboard that is its USB device node,
+                // typically two or three levels up — not just the immediate
+                // parent).
                 string targetId = nodeId;
                 bool targetDisableable = nodeDisableable;
                 bool targetEnabled = !IsDisabled(devInfo.DevInst);
 
-                if (!nodeDisableable)
+                if (!nodeDisableable && FindDisableableAncestor(devInfo.DevInst) is { } ancestor)
                 {
-                    string? parentId = GetParentInstanceId(devInfo.DevInst);
-                    if (parentId is not null)
-                    {
-                        var parent = ReadStatus(parentId);
-                        if (parent is { } p)
-                        {
-                            targetId = parentId;
-                            targetDisableable = (p.status & DN_DISABLEABLE) != 0;
-                            targetEnabled = !((p.status & DN_HAS_PROBLEM) != 0 && p.problem == CM_PROB_DISABLED);
-                            name = $"{name} (через родителя)";
-                        }
-                    }
+                    targetId = ancestor.instanceId;
+                    targetDisableable = true;
+                    targetEnabled = ancestor.enabled;
+                    name = $"{name} (через родителя)";
                 }
 
                 result.Add(new KeyboardDevice
@@ -72,6 +69,7 @@ public static class DeviceManager
                     TargetInstanceId = targetId,
                     IsEnabled = targetEnabled,
                     CanDisable = targetDisableable,
+                    IsRegistryBlocked = IsRegistryBlocked(nodeId),
                 });
 
                 devInfo.cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>();
@@ -175,6 +173,135 @@ public static class DeviceManager
         UpdateDisabledStore(targetInstanceId, device.Name, disabled: !enable);
     }
 
+    /// <summary>
+    /// Name of the bogus upper-filter driver we inject to kill a single
+    /// keyboard. It names a service that does not exist, so the PnP manager
+    /// fails to start that one device node (and only that node) after the next
+    /// reboot. Removing the name fully restores the device.
+    /// </summary>
+    private const string RegistryBlockFilter = "DisKeyboardNull";
+
+    /// <summary>
+    /// True when the keyboard-class node carries our injected upper filter, i.e.
+    /// it is set to be killed on the next reboot.
+    /// </summary>
+    public static bool IsRegistryBlocked(string instanceId)
+    {
+        var filters = ReadUpperFilters(instanceId);
+        return filters is not null
+            && filters.Any(f => f.Equals(RegistryBlockFilter, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Adds or removes the bogus upper filter on a single keyboard node. This
+    /// disables ONLY that keyboard (its touchpad sibling and other keyboards are
+    /// untouched), is reversible, and takes effect after a reboot. Used for
+    /// built-in PS/2 keyboards that Windows refuses to disable directly.
+    /// </summary>
+    public static void SetRegistryBlock(string instanceId, bool block)
+    {
+        if (string.IsNullOrEmpty(instanceId))
+            throw new ArgumentException("Instance id is required.", nameof(instanceId));
+
+        IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+        if (set == INVALID_HANDLE_VALUE)
+            throw LastError("SetupDiCreateDeviceInfoList");
+
+        try
+        {
+            var devInfo = new SP_DEVINFO_DATA();
+            devInfo.cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>();
+            if (!SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref devInfo))
+                throw LastError("SetupDiOpenDeviceInfo");
+
+            var filters = ReadUpperFiltersFrom(set, ref devInfo) ?? new List<string>();
+            bool present = filters.Any(
+                f => f.Equals(RegistryBlockFilter, StringComparison.OrdinalIgnoreCase));
+
+            if (block)
+            {
+                if (present)
+                    return; // Already blocked — nothing to do.
+                filters.Add(RegistryBlockFilter);
+            }
+            else
+            {
+                if (!present)
+                    return; // Not blocked — nothing to do.
+                filters.RemoveAll(
+                    f => f.Equals(RegistryBlockFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            WriteUpperFilters(set, ref devInfo, filters);
+        }
+        finally
+        {
+            SetupDiDestroyDeviceInfoList(set);
+        }
+    }
+
+    private static List<string>? ReadUpperFilters(string instanceId)
+    {
+        IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+        if (set == INVALID_HANDLE_VALUE)
+            return null;
+
+        try
+        {
+            var devInfo = new SP_DEVINFO_DATA();
+            devInfo.cbSize = (uint)Marshal.SizeOf<SP_DEVINFO_DATA>();
+            if (!SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref devInfo))
+                return null;
+            return ReadUpperFiltersFrom(set, ref devInfo);
+        }
+        finally
+        {
+            SetupDiDestroyDeviceInfoList(set);
+        }
+    }
+
+    private static List<string> ReadUpperFiltersFrom(IntPtr set, ref SP_DEVINFO_DATA devInfo)
+    {
+        SetupDiGetDeviceRegistryProperty(
+            set, ref devInfo, SPDRP_UPPERFILTERS, out _, null, 0, out uint required);
+        if (required == 0)
+            return new List<string>(); // No UpperFilters value present.
+
+        var buffer = new byte[required];
+        if (!SetupDiGetDeviceRegistryProperty(
+                set, ref devInfo, SPDRP_UPPERFILTERS, out _, buffer, required, out _))
+        {
+            return new List<string>();
+        }
+
+        string raw = System.Text.Encoding.Unicode.GetString(buffer);
+        return raw.Split('\0', StringSplitOptions.RemoveEmptyEntries).ToList();
+    }
+
+    private static void WriteUpperFilters(
+        IntPtr set, ref SP_DEVINFO_DATA devInfo, List<string> filters)
+    {
+        // Passing a null buffer deletes the value, restoring the pristine state
+        // when our filter was the only entry.
+        byte[]? buffer = filters.Count == 0 ? null : BuildMultiSz(filters);
+        uint size = buffer is null ? 0u : (uint)buffer.Length;
+
+        if (!SetupDiSetDeviceRegistryProperty(set, ref devInfo, SPDRP_UPPERFILTERS, buffer, size))
+            throw LastError("SetupDiSetDeviceRegistryProperty");
+    }
+
+    private static byte[] BuildMultiSz(List<string> values)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (string v in values)
+        {
+            sb.Append(v);
+            sb.Append('\0');
+        }
+        sb.Append('\0'); // Double-null terminates a REG_MULTI_SZ.
+        return System.Text.Encoding.Unicode.GetBytes(sb.ToString());
+    }
+
     private static readonly string StorePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "DisKeyboard", "disabled.tsv");
@@ -225,10 +352,17 @@ public static class DeviceManager
         if (!enable && (GetStatus(devInfo.DevInst).status & DN_DISABLEABLE) == 0)
         {
             throw new InvalidOperationException(
-                "Это устройство нельзя отключить: Windows помечает его как не " +
-                "отключаемое. У встроенной PS/2-клавиатуры родителем часто служит " +
-                "контроллер i8042, который также обслуживает тачпад, поэтому " +
-                "Windows запрещает его отключение.");
+                "Это устройство нельзя отключить на уровне оборудования: Windows " +
+                "помечает его как не отключаемое. У встроенной PS/2-клавиатуры " +
+                "контроллер i8042 также обслуживает тачпад, поэтому Windows " +
+                "запрещает его отключение.\n\n" +
+                "Чтобы отключить ТОЛЬКО эту клавиатуру, нажмите «Заблокировать " +
+                "выбранную через реестр» — она перестанет работать после " +
+                "перезагрузки (тачпад и другие клавиатуры не затрагиваются, " +
+                "блокировка обратима).\n\n" +
+                "Либо используйте «Аварийную блокировку ВСЕХ клавиатур» — она " +
+                "действует сразу через перехват ввода, но блокирует все " +
+                "клавиатуры (снять: мышь или Ctrl+Alt+End).");
         }
 
         var propChange = new SP_PROPCHANGE_PARAMS
@@ -289,15 +423,51 @@ public static class DeviceManager
         }
     }
 
-    private static string? GetParentInstanceId(uint devInst)
+    /// <summary>Hard cap on how far we climb the device tree, so a broken or
+    /// cyclic chain can never spin forever.</summary>
+    private const int MaxParentWalk = 16;
+
+    /// <summary>
+    /// Walks up the device tree from <paramref name="devInst"/> and returns the
+    /// nearest ancestor that Windows reports as disableable. Returns
+    /// <c>null</c> when no ancestor can be disabled (e.g. a built-in PS/2
+    /// keyboard whose i8042 controller is shared with the touchpad).
+    /// </summary>
+    private static (string instanceId, bool enabled)? FindDisableableAncestor(uint devInst)
     {
-        if (CM_Get_Parent(out uint parent, devInst, 0) != CR_SUCCESS)
-            return null;
-        if (CM_Get_Device_ID_Size(out uint len, parent, 0) != CR_SUCCESS || len == 0)
+        uint current = devInst;
+        for (int level = 0; level < MaxParentWalk; level++)
+        {
+            if (CM_Get_Parent(out uint parent, current, 0) != CR_SUCCESS)
+                return null;
+
+            var (status, problem) = GetStatus(parent);
+            if (status == 0)
+                return null; // Could not read this node; stop climbing.
+
+            if ((status & DN_DISABLEABLE) != 0)
+            {
+                string? id = GetDeviceIdFromDevInst(parent);
+                if (id is null)
+                    return null;
+
+                bool enabled = !((status & DN_HAS_PROBLEM) != 0 && problem == CM_PROB_DISABLED);
+                return (id, enabled);
+            }
+
+            current = parent;
+        }
+
+        return null;
+    }
+
+    private static string? GetDeviceIdFromDevInst(uint devInst)
+    {
+        if (CM_Get_Device_ID_Size(out uint len, devInst, 0) != CR_SUCCESS || len == 0)
             return null;
 
         var buffer = new char[len + 1];
-        if (CM_Get_Device_ID(parent, buffer, len + 1, 0) != CR_SUCCESS)
+        if (CM_Get_Device_ID(devInst, buffer, len + 1, 0) != CR_SUCCESS)
             return null;
 
         return new string(buffer).TrimEnd('\0');

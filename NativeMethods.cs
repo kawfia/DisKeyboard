@@ -19,6 +19,7 @@ internal static class NativeMethods
     // SetupDiGetDeviceRegistryProperty properties
     public const uint SPDRP_DEVICEDESC = 0x00000000;
     public const uint SPDRP_FRIENDLYNAME = 0x0000000C;
+    public const uint SPDRP_UPPERFILTERS = 0x00000011;
 
     // Class install function
     public const uint DIF_PROPERTYCHANGE = 0x00000012;
@@ -101,6 +102,15 @@ internal static class NativeMethods
         uint DeviceInstanceIdSize,
         out uint RequiredSize);
 
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetupDiSetDeviceRegistryProperty(
+        IntPtr DeviceInfoSet,
+        ref SP_DEVINFO_DATA DeviceInfoData,
+        uint Property,
+        byte[]? PropertyBuffer,
+        uint PropertyBufferSize);
+
     [DllImport("setupapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetupDiSetClassInstallParams(
@@ -159,4 +169,55 @@ internal static class NativeMethods
         char[] Buffer,
         uint BufferLen,
         uint ulFlags);
+
+    // --- Low-level keyboard hook (guaranteed input block fallback) ---
+
+    public const int WH_KEYBOARD_LL = 13;
+    public const int HC_ACTION = 0;
+
+    public const uint WM_KEYDOWN = 0x0100;
+    public const uint WM_KEYUP = 0x0101;
+    public const uint WM_SYSKEYDOWN = 0x0104;
+    public const uint WM_SYSKEYUP = 0x0105;
+
+    // Virtual-key codes used by the escape combo and modifier checks.
+    public const int VK_CONTROL = 0x11;
+    public const int VK_MENU = 0x12; // Alt
+    public const int VK_END = 0x23;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(
+        int idHook,
+        LowLevelKeyboardProc lpfn,
+        IntPtr hMod,
+        uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr CallNextHookEx(
+        IntPtr hhk,
+        int nCode,
+        IntPtr wParam,
+        IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandle(string? lpModuleName);
 }
