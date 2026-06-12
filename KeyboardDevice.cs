@@ -26,6 +26,12 @@ public sealed class KeyboardDevice
     /// <summary>False when Windows reports the target as non-disableable.</summary>
     public bool CanDisable { get; init; } = true;
 
+    /// <summary>
+    /// True when this keyboard node carries our injected upper filter, i.e. it
+    /// is set to stop working on the next reboot (the per-device registry block).
+    /// </summary>
+    public bool IsRegistryBlocked { get; set; }
+
     /// <summary>True when the toggled node differs from the keyboard node.</summary>
     public bool UsesParent => !string.Equals(
         InstanceId, TargetInstanceId, StringComparison.OrdinalIgnoreCase);
@@ -36,7 +42,8 @@ public sealed class KeyboardDevice
         {
             string state = IsEnabled ? "вкл" : "откл";
             string suffix = CanDisable ? string.Empty : ", нельзя отключить";
-            return $"{Name}  [{state}{suffix}]";
+            string reg = IsRegistryBlocked ? ", реестр: блок после перезагрузки" : string.Empty;
+            return $"{Name}  [{state}{suffix}{reg}]";
         }
     }
 

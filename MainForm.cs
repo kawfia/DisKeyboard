@@ -11,6 +11,7 @@ public sealed class MainForm : Form
 {
     private readonly CheckedListBox _list = new();
     private readonly Button _refreshButton = new();
+    private readonly Button _registryButton = new();
     private readonly Label _hint = new();
     private readonly CheckBox _lockAll = new();
     private readonly NotifyIcon _trayIcon = new();
@@ -50,11 +51,17 @@ public sealed class MainForm : Form
         _list.CheckOnClick = true;
         _list.IntegralHeight = false;
         _list.ItemCheck += OnItemCheck;
+        _list.SelectedIndexChanged += (_, _) => UpdateRegistryButtonText();
 
         _refreshButton.Text = "Обновить список";
         _refreshButton.Dock = DockStyle.Bottom;
         _refreshButton.Height = 36;
         _refreshButton.Click += (_, _) => ReloadDevices();
+
+        _registryButton.Text = "Заблокировать выбранную через реестр (перезагрузка)";
+        _registryButton.Dock = DockStyle.Bottom;
+        _registryButton.Height = 32;
+        _registryButton.Click += OnRegistryButtonClick;
 
         _lockAll.Text = "Аварийная блокировка ВСЕХ клавиатур (снять: мышь или Ctrl+Alt+End)";
         _lockAll.Dock = DockStyle.Bottom;
@@ -66,6 +73,7 @@ public sealed class MainForm : Form
         Controls.Add(_list);
         Controls.Add(_hint);
         Controls.Add(_lockAll);
+        Controls.Add(_registryButton);
         Controls.Add(_refreshButton);
     }
 
@@ -120,6 +128,8 @@ public sealed class MainForm : Form
         {
             _suppressItemCheck = false;
         }
+
+        UpdateRegistryButtonText();
     }
 
     private void OnItemCheck(object? sender, ItemCheckEventArgs e)
@@ -149,6 +159,56 @@ public sealed class MainForm : Form
                 $"Не удалось {(enable ? "включить" : "отключить")} клавиатуру \"{device.Name}\":\n{ex.Message}",
                 "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private void OnRegistryButtonClick(object? sender, EventArgs e)
+    {
+        int index = _list.SelectedIndex;
+        if (index < 0 || index >= _devices.Count)
+        {
+            MessageBox.Show(this, "Сначала выберите клавиатуру в списке.",
+                "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var device = _devices[index];
+        bool blocked = device.IsRegistryBlocked;
+
+        string prompt = blocked
+            ? $"Снять реестровую блокировку с «{device.Name}»?\n\n" +
+              "Клавиатура снова заработает ПОСЛЕ перезагрузки."
+            : $"Заблокировать «{device.Name}» через реестр?\n\n" +
+              "Этой клавиатуре будет назначен несуществующий драйвер-фильтр, и она " +
+              "перестанет работать ПОСЛЕ перезагрузки. Тачпад и другие клавиатуры " +
+              "не затрагиваются. Блокировка обратима этой же кнопкой.";
+
+        if (MessageBox.Show(this, prompt, "DisKeyboard",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            return;
+
+        try
+        {
+            DeviceManager.SetRegistryBlock(device.InstanceId, !blocked);
+            ReloadDevices();
+            MessageBox.Show(this,
+                "Готово. Перезагрузите компьютер, чтобы изменения вступили в силу.",
+                "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Не удалось изменить реестровую блокировку:\n{ex.Message}",
+                "DisKeyboard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void UpdateRegistryButtonText()
+    {
+        int index = _list.SelectedIndex;
+        bool blocked = index >= 0 && index < _devices.Count && _devices[index].IsRegistryBlocked;
+        _registryButton.Text = blocked
+            ? "Снять реестровую блокировку с выбранной (перезагрузка)"
+            : "Заблокировать выбранную через реестр (перезагрузка)";
     }
 
     private void OnLockCheckedChanged(object? sender, EventArgs e)

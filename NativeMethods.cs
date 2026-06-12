@@ -19,6 +19,7 @@ internal static class NativeMethods
     // SetupDiGetDeviceRegistryProperty properties
     public const uint SPDRP_DEVICEDESC = 0x00000000;
     public const uint SPDRP_FRIENDLYNAME = 0x0000000C;
+    public const uint SPDRP_UPPERFILTERS = 0x00000011;
 
     // Class install function
     public const uint DIF_PROPERTYCHANGE = 0x00000012;
@@ -100,6 +101,15 @@ internal static class NativeMethods
         char[]? DeviceInstanceId,
         uint DeviceInstanceIdSize,
         out uint RequiredSize);
+
+    [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetupDiSetDeviceRegistryProperty(
+        IntPtr DeviceInfoSet,
+        ref SP_DEVINFO_DATA DeviceInfoData,
+        uint Property,
+        byte[]? PropertyBuffer,
+        uint PropertyBufferSize);
 
     [DllImport("setupapi.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
